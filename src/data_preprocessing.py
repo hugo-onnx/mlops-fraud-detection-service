@@ -16,9 +16,10 @@ def prepare_and_split(df, test_size=0.2, random_state=42):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, stratify=y, random_state=random_state
     )
+
     return X_train, X_test, y_train, y_test
 
-def scale_and_save(X_train, X_test, out_dir="data/processed"):
+def scale_and_save(X_train, X_test, y_train, y_test, out_dir="data/processed"):
     os.makedirs(out_dir, exist_ok=True)
 
     scaler = StandardScaler()
@@ -26,6 +27,8 @@ def scale_and_save(X_train, X_test, out_dir="data/processed"):
     X_test_scaled = scaler.transform(X_test)
 
     joblib.dump(scaler, os.path.join(out_dir, "scaler.pkl"))
-    pd.DataFrame(X_train).to_csv(os.path.join(out_dir, "X_train.csv"), index=False)
-    pd.DataFrame(X_test).to_csv(os.path.join(out_dir, "X_test.csv"), index=False)
+    pd.DataFrame(X_train).to_csv(os.path.join(out_dir, "X_train_scaled.csv"), index=False)
+    pd.DataFrame(X_test).to_csv(os.path.join(out_dir, "X_test_scaled.csv"), index=False)
+    pd.DataFrame(y_train).to_csv(os.path.join(out_dir, "y_train.csv"), index=False)
+    pd.DataFrame(y_test).to_csv(os.path.join(out_dir, "y_test.csv"), index=False)
     return X_train_scaled, X_test_scaled, scaler
