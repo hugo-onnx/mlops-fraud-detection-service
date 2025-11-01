@@ -27,8 +27,23 @@ def scale_and_save(X_train, X_test, y_train, y_test, out_dir="data/processed"):
     X_test_scaled = scaler.transform(X_test)
 
     joblib.dump(scaler, os.path.join(out_dir, "scaler.pkl"))
-    pd.DataFrame(X_train).to_csv(os.path.join(out_dir, "X_train_scaled.csv"), index=False)
-    pd.DataFrame(X_test).to_csv(os.path.join(out_dir, "X_test_scaled.csv"), index=False)
-    pd.DataFrame(y_train).to_csv(os.path.join(out_dir, "y_train.csv"), index=False)
-    pd.DataFrame(y_test).to_csv(os.path.join(out_dir, "y_test.csv"), index=False)
+    pd.DataFrame(X_train_scaled, columns=X_train.columns).to_parquet(
+        os.path.join(out_dir, "X_train_scaled.parquet"), index=False
+    )
+    pd.DataFrame(X_test_scaled, columns=X_test.columns).to_parquet(
+        os.path.join(out_dir, "X_test_scaled.parquet"), index=False
+    )
+    pd.DataFrame(y_train, columns=["Class"]).to_parquet(
+        os.path.join(out_dir, "y_train.parquet"), index=False
+    )
+    pd.DataFrame(y_test, columns=["Class"]).to_parquet(
+        os.path.join(out_dir, "y_test.parquet"), index=False
+    )
     return X_train_scaled, X_test_scaled, scaler
+
+
+if __name__ == "__main__":
+    df = load_raw()
+    X_train, X_test, y_train, y_test = prepare_and_split(df)
+    X_train_scaled, X_test_scaled, scaler = scale_and_save(X_train, X_test, y_train, y_test)
+    print("Data prep done")
