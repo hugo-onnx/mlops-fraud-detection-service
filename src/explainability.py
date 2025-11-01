@@ -2,11 +2,10 @@ import shap
 import joblib
 import pandas as pd
 import matplotlib.pyplot as plt
-from pathlib import Path
 
 
-model = joblib.load("models/XGBoost_best.pkl")
-X_test_scaled = pd.read_csv("data/processed/X_test_scaled.csv")
+model = joblib.load("models/LightGBM_best.joblib")
+X_test_scaled = pd.read_parquet("data/processed/X_test_scaled.parquet")
 
 explainer = shap.TreeExplainer(model)
 shap_values = explainer(X_test_scaled)

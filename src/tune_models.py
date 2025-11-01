@@ -1,23 +1,21 @@
 import os
 import json
-import joblib
 import optuna
 import numpy as np
 import pandas as pd
-import xgboost as xgb
+import lightgbm as lgb
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 
 
-# Load processed training data
-X_train_scaled = pd.read_csv("data/processed/X_train_scaled.csv")
-y_train = pd.read_csv("data/processed/y_train.csv").values.ravel()
+X_train_scaled = pd.read_parquet("data/processed/X_train_scaled.parquet")
+y_train = pd.read_parquet("data/processed/y_train.parquet").values.ravel()
 
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 scorer = 'roc_auc'
-N_TRIALS = 1
+N_TRIALS = 5
 STORAGE = "sqlite:///optuna.db"
 
 
@@ -27,7 +25,7 @@ def objective_logreg(trial):
         "penalty": trial.suggest_categorical('penalty', ['l2']),
         "solver": trial.suggest_categorical('solver', ['lbfgs', 'liblinear'])
     }
-    
+
     model = LogisticRegression(
         **params,
         class_weight='balanced',
@@ -44,8 +42,7 @@ def objective_rf(trial):
         "max_depth": trial.suggest_int('max_depth', 3, 15),
         "min_samples_split": trial.suggest_int('min_samples_split', 2, 10),
         "max_features": trial.suggest_categorical('max_features', ['sqrt', 'log2', None])
-    } 
-   
+    }
 
     model = RandomForestClassifier(
         **params,
@@ -57,21 +54,23 @@ def objective_rf(trial):
     return float(np.nanmean(scores))
 
 
-def objective_xgb(trial):
+def objective_lgb(trial):
     params = {
         "n_estimators": trial.suggest_int('n_estimators', 200, 800),
         "max_depth": trial.suggest_int('max_depth', 3, 10),
         "learning_rate": trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
         "subsample": trial.suggest_float('subsample', 0.5, 1.0),
-        "colsample_bytree": trial.suggest_float('colsample_bytree', 0.5, 1.0)
+        "colsample_bytree": trial.suggest_float('colsample_bytree', 0.5, 1.0),
     }
     
     scale_pos_weight = (len(y_train) - sum(y_train)) / sum(y_train)
 
-    model = xgb.XGBClassifier(
+    model = lgb.LGBMClassifier(
         **params,
         scale_pos_weight=scale_pos_weight,
-        eval_metric='logloss',
+        objective="binary",
+        boosting_type="gbdt",
+        verbose=-1,
         random_state=42,
         n_jobs=-1
     )
@@ -81,7 +80,7 @@ def objective_xgb(trial):
 
 def run_study(name, objective):
     study = optuna.create_study(direction="maximize", study_name=name, storage=STORAGE, load_if_exists=True)
-    study.optimize(objective, n_trials=N_TRIALS, n_jobs=1)
+    study.optimize(objective, n_trials=N_TRIALS, n_jobs=-1)
     return study
 
 if __name__ == "__main__":
@@ -90,7 +89,7 @@ if __name__ == "__main__":
     for name, obj in [
         ("logreg", objective_logreg), 
         ("rf", objective_rf), 
-        ("xgb", objective_xgb)
+        ("lgb", objective_lgb)
     ]:
         print("Running study:", name)
         studies[name] = run_study(name, obj)
