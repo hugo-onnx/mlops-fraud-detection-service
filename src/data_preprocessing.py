@@ -1,5 +1,6 @@
 import os
 import joblib
+import json
 import pandas as pd
 
 from sklearn.preprocessing import StandardScaler
@@ -16,6 +17,9 @@ def prepare_and_split(df, test_size=0.2, random_state=42):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, stratify=y, random_state=random_state
     )
+
+    cols = list(X_train.columns)
+    json.dump(cols, open("data/processed/feature_columns.json", "w"))
 
     return X_train, X_test, y_train, y_test
 
