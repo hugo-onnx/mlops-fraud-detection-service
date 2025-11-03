@@ -3,6 +3,7 @@ import time
 import joblib
 import logging
 import numpy as np
+import pandas as pd
 import onnxruntime as rt
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
@@ -68,12 +69,17 @@ def predict(transaction: Transaction, request: Request):
             raise HTTPException(status_code=400, detail=msg)
 
         # Convert and scale
-        X = np.array([input_features[c] for c in cols], dtype=np.float32).reshape(1, -1)
-        X_scaled = scaler.transform(X).astype(np.float32)
+        X_df = pd.DataFrame([input_features], columns=cols)
+        X_scaled = scaler.transform(X_df).astype(np.float32)
 
         # Run ONNX inference
-        preds = session.run([output_name], {input_name: X_scaled})[0]
-        proba = float(preds[0][1]) if preds.ndim == 2 else float(preds[0])
+        preds_list = session.run([output_name], {input_name: X_scaled})
+
+        # Unwrap nested lists
+        pred_dict = preds_list[0][0]
+
+        # Extract fraud probability (class 1)
+        proba = float(pred_dict[1])
 
         latency = time.time() - start_time
         logger.info(
