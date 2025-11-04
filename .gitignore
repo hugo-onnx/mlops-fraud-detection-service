@@ -210,3 +210,4 @@ __marimo__/
 data/
 .DS_Store
 optuna.db
+commands.txt
