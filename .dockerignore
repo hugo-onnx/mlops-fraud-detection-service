@@ -15,18 +15,12 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Data folders
-data/raw/
-data/processed/
+data/
 results/
-!data/processed/scaler.pkl
-!data/processed/feature_columns.json
+
 
 # Model training artifacts
-models/*.onnx
-models/*.pkl
-models/*.joblib
-models/*.bin
-!models/LightGBM_best.onnx
+models/
 
 # Logs and temporary files
 logs/
