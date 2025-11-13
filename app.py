@@ -7,7 +7,7 @@ import sqlite3
 import numpy as np
 import pandas as pd
 import onnxruntime as rt
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
@@ -63,7 +63,7 @@ def log_request_to_db(features: dict, proba: float):
 
     columns = ", ".join([f'"{k}"' for k in features.keys()] + ["fraud_probability", "timestamp"])
     placeholders = ", ".join(["?"] * (len(features) + 2))
-    values = list(features.values()) + [proba, datetime.utcnow().isoformat()]
+    values = list(features.values()) + [proba, datetime.now(timezone.utc).isoformat()]
 
     cursor.execute(f"INSERT INTO requests ({columns}) VALUES ({placeholders})", values)
     conn.commit()
