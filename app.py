@@ -1,10 +1,13 @@
+import os
 import json
 import time
 import joblib
 import logging
+import sqlite3
 import numpy as np
 import pandas as pd
 import onnxruntime as rt
+from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
@@ -16,13 +19,11 @@ logger = logging.getLogger("fraud-api")
 
 app = FastAPI(title="Fraud Detection API")
 
-# load model and scaler
 onnx_model_path = "models/LightGBM_best.onnx"
 scaler = joblib.load("data/processed/scaler.pkl")
 with open("data/processed/feature_columns.json", "r") as f:
     cols = json.load(f)
 
-# Create ONNX runtime session
 session = rt.InferenceSession(onnx_model_path, providers=["CPUExecutionProvider"])
 
 prob_output = None
@@ -33,6 +34,40 @@ for out in session.get_outputs():
 
 output_name = prob_output if prob_output else session.get_outputs()[0].name
 input_name = session.get_inputs()[0].name
+
+
+DB_PATH = "data/production/requests.db"
+
+def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    feature_cols = ", ".join([f'"{c}" REAL' for c in cols])
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            {feature_cols},
+            fraud_probability REAL,
+            timestamp TEXT
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def log_request_to_db(features: dict, proba: float):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    columns = ", ".join([f'"{k}"' for k in features.keys()] + ["fraud_probability", "timestamp"])
+    placeholders = ", ".join(["?"] * (len(features) + 2))
+    values = list(features.values()) + [proba, datetime.utcnow().isoformat()]
+
+    cursor.execute(f"INSERT INTO requests ({columns}) VALUES ({placeholders})", values)
+    conn.commit()
+    conn.close()
 
 
 class Transaction(BaseModel):
@@ -46,7 +81,6 @@ class Transaction(BaseModel):
         return self
 
 
-# informarte sobre async def
 @app.post("/predict")
 def predict(transaction: Transaction, request: Request):
     start_time = time.time()
@@ -55,7 +89,6 @@ def predict(transaction: Transaction, request: Request):
 
         input_features = transaction.features
 
-        # Validate feature completeness
         missing = [c for c in cols if c not in input_features]
         extra = [k for k in input_features if k not in cols]
 
@@ -68,17 +101,13 @@ def predict(transaction: Transaction, request: Request):
             logger.warning(msg)
             raise HTTPException(status_code=400, detail=msg)
 
-        # Convert and scale
         X_df = pd.DataFrame([input_features], columns=cols)
         X_scaled = scaler.transform(X_df).astype(np.float32)
 
-        # Run ONNX inference
         preds_list = session.run([output_name], {input_name: X_scaled})
 
-        # Unwrap nested lists
         pred_dict = preds_list[0][0]
 
-        # Extract fraud probability (class 1)
         proba = float(pred_dict[1])
 
         latency = time.time() - start_time
@@ -89,6 +118,8 @@ def predict(transaction: Transaction, request: Request):
                 "latency_sec": round(latency, 4)
             })
         )
+
+        log_request_to_db(input_features, proba)
 
         return {"fraud_probability": proba}
     
