@@ -49,8 +49,6 @@ def create_production_copy(df, out_dir="data/production"):
     os.makedirs(out_dir, exist_ok=True)
 
     df_copy = df.copy()
-    if "Class" in df_copy.columns:
-        df_copy = df_copy.rename(columns={"Class": "fraud_probability"})
 
     output_path = os.path.join(out_dir, "creditcard_reference.csv")
     df_copy.to_csv(output_path, index=False)
