@@ -16,10 +16,10 @@ dependencies = [
     "scikit-learn>=1.7.2",
     "evidently>=0.7.16",
     "mlflow>=3.6.0",
-]
-
-[project.optional-dependencies]
-dev = [
+    "pip>=25.3",
+    "boto3>=1.41.4",
+    "torchvision>=0.24.1",
+    "seaborn>=0.13.2",
     "ipykernel>=7.0.1",
     "lightgbm>=4.6.0",
     "matplotlib>=3.10.7",
