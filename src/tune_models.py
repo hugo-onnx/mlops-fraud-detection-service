@@ -15,7 +15,7 @@ y_train = pd.read_parquet("data/processed/y_train.parquet").values.ravel()
 
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 scorer = 'roc_auc'
-N_TRIALS = 5
+N_TRIALS = 1
 STORAGE = "sqlite:///optuna.db"
 
 
