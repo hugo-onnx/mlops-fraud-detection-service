@@ -14,10 +14,21 @@ import mlflow
 import mlflow.sklearn
 import mlflow.onnx
 from mlflow.models import infer_signature
+from mlflow.tracking import MlflowClient
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve
+from sklearn.metrics import (
+    roc_auc_score, 
+    precision_score, 
+    recall_score, 
+    f1_score, 
+    confusion_matrix, 
+    roc_curve,
+    precision_recall_curve,
+    auc,
+    average_precision_score
+)
 
 import onnx
 from skl2onnx import convert_sklearn
@@ -29,23 +40,21 @@ from dotenv import load_dotenv
 warnings.filterwarnings('ignore', message='.*LightGBM binary classifier.*')
 
 # Config / Flags
-# Ensures metrics & artifacts flush immediately in containerized environments
 os.environ["MLFLOW_FLUSH_INTERVAL"] = "1"
-
 load_dotenv(".env.local")
 
 ENABLE_SHAP = True  # set to False to skip SHAP computations for faster runs
 
 # Helpers
 def file_hash(path: str) -> str:
-    """Return md5 hash of a file (useful to track dataset versions)."""
+    """Return md5 hash of a file"""
     hasher = hashlib.md5()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
 
-# Paths & Data
+# Paths and Data
 os.makedirs("models", exist_ok=True)
 os.makedirs("results", exist_ok=True)
 
@@ -60,7 +69,7 @@ y_train = pd.read_parquet(y_train_path).squeeze()
 y_test = pd.read_parquet(y_test_path).squeeze()
 
 mlflow.set_tracking_uri("http://localhost:5001")
-mlflow.set_experiment("Fraud Detection V2")
+mlflow.set_experiment("Fraud Detection V3")
 
 def train_save_eval(model, name, X_train_scaled, y_train, X_test_scaled, y_test):
     with mlflow.start_run(run_name=name, nested=True):
@@ -80,7 +89,7 @@ def train_save_eval(model, name, X_train_scaled, y_train, X_test_scaled, y_test)
         # Fit model
         model.fit(X_train_scaled, y_train)
 
-        # Signature & input_example
+        # Signature and input_example
         proba_example = model.predict_proba(X_train_scaled)
         signature = infer_signature(X_train_scaled, proba_example)
         input_example = X_train_scaled.iloc[:1]
@@ -90,23 +99,25 @@ def train_save_eval(model, name, X_train_scaled, y_train, X_test_scaled, y_test)
         joblib.dump(model, joblib_path)
         mlflow.log_artifact(joblib_path, artifact_path=f"{name}/joblib")
 
+        # Log sklearn model
+        model_info = None
         try:
-            mlflow.sklearn.log_model(
+            model_info = mlflow.sklearn.log_model(
                 sk_model=model,
                 name=f"{name}_pkl",
                 signature=signature,
-                input_example=input_example
+                input_example=input_example,
+                registered_model_name=f"fraud_detection_{name.lower()}"
             )
         except Exception as e:
             print(f"Could not mlflow.sklearn.log_model for {name}: {e}")
 
+        # ONNX conversion
         try:
             if "lightgbm" in type(model).__module__:
-                # Convert LightGBM model using onnxmltools
                 initial_type = [('float_input', FloatTensorType([None, X_train_scaled.shape[1]]))]
                 onnx_model = onnxmltools.convert_lightgbm(model, initial_types=initial_type, target_opset=15)
             else:
-                # Sklearn conversion
                 input_type = [("input", SKLFloatTensorType([None, X_train_scaled.shape[1]]))]
                 onnx_model = convert_sklearn(model, initial_types=input_type)
 
@@ -137,15 +148,23 @@ def train_save_eval(model, name, X_train_scaled, y_train, X_test_scaled, y_test)
         except Exception as e:
             print(f"Could not convert {name} to ONNX: {e}")
 
-        # Predictions + metrics
+        # Predictions
         y_pred = model.predict(X_test_scaled)
         y_proba = model.predict_proba(X_test_scaled)[:,1]
 
+        # Calculate metrics
+        precision = precision_score(y_test, y_pred, zero_division=0)
+        recall = recall_score(y_test, y_pred, zero_division=0)
+        f1 = f1_score(y_test, y_pred, zero_division=0)
+        roc_auc = roc_auc_score(y_test, y_proba)
+        pr_auc = average_precision_score(y_test, y_proba)
+        
         metrics = {
-            "Precision": precision_score(y_test, y_pred, zero_division=0),
-            "Recall": recall_score(y_test, y_pred, zero_division=0),
-            "F1-score": f1_score(y_test, y_pred, zero_division=0),
-            "ROC-AUC": roc_auc_score(y_test, y_proba)
+            "Precision": precision,
+            "Recall": recall,
+            "F1-score": f1,
+            "ROC-AUC": roc_auc,
+            "PR-AUC": pr_auc
         }
 
         for k, v in metrics.items():
@@ -163,16 +182,30 @@ def train_save_eval(model, name, X_train_scaled, y_train, X_test_scaled, y_test)
         
         # ROC plot
         fpr, tpr, _ = roc_curve(y_test, y_proba)
-        plt.plot(fpr, tpr, label=f"{name} AUC={metrics['ROC-AUC']:.3f}")
+        plt.figure(figsize=(6,4))
+        plt.plot(fpr, tpr, label=f"{name} AUC={roc_auc:.3f}")
         plt.plot([0,1],[0,1],"k--")
-        plt.xlabel("FPR")
-        plt.ylabel("TPR")
-        plt.title(f"{name} ROC")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title(f"{name} ROC Curve")
         plt.legend()
         roc_path = f"results/{name}_roc.png"
         plt.savefig(roc_path, bbox_inches='tight')
         plt.clf()
         mlflow.log_artifact(roc_path, artifact_path=f"{name}/plots")
+
+        # Precision-Recall curve
+        precision_curve, recall_curve, _ = precision_recall_curve(y_test, y_proba)
+        plt.figure(figsize=(6,4))
+        plt.plot(recall_curve, precision_curve, label=f"{name} PR-AUC={pr_auc:.3f}")
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.title(f"{name} Precision-Recall Curve")
+        plt.legend()
+        pr_path = f"results/{name}_precision_recall.png"
+        plt.savefig(pr_path, bbox_inches='tight')
+        plt.clf()
+        mlflow.log_artifact(pr_path, artifact_path=f"{name}/plots")
 
         # SHAP explainability
         if ENABLE_SHAP:
@@ -218,16 +251,47 @@ def train_save_eval(model, name, X_train_scaled, y_train, X_test_scaled, y_test)
             finally:
                 plt.close('all')
 
-            # ---- optional: register model to Model Registry (uncomment if using registry) ----
-            # try:
-            #     # Adjust model_uri to the exact artifact path that was logged above
-            #     model_uri = f"runs:/{mlflow.active_run().info.run_id}/{name}_pkl"
-            #     res = mlflow.register_model(model_uri, f"{name}_Registry")
-            #     mlflow.set_tag("registered_model_version", str(res.version))
-            # except Exception as e:
-            #     print(f"Model registry step failed for {name}: {e}")
+        # Update model version with description in registry
+        if model_info:
+            try:
+                client = MlflowClient()
+                model_name = f"fraud_detection_{name.lower()}"
+                 
+                # Get the model version from the returned model_info
+                version = model_info.registered_model_version
+                
+                # Add comprehensive description
+                description = (
+                    f"PR-AUC: {pr_auc:.4f} | ROC-AUC: {roc_auc:.4f} | "
+                    f"F1: {f1:.4f} | Precision: {precision:.4f} | Recall: {recall:.4f}"
+                )
+                
+                client.update_model_version(
+                    name=model_name,
+                    version=version,
+                    description=description
+                )
+                
+                # Add tags for tracking
+                client.set_model_version_tag(
+                    name=model_name,
+                    version=version,
+                    key="pr_auc",
+                    value=str(round(pr_auc, 4))
+                )
+                client.set_model_version_tag(
+                    name=model_name,
+                    version=version,
+                    key="trained_date",
+                    value=pd.Timestamp.now().strftime("%Y-%m-%d")
+                )
+                
+                print(f"Registered {model_name} version {version}")
+                
+            except Exception as e:
+                print(f"Could not update model registry for {name}: {e}")
 
-        return metrics
+        return metrics, model_info
 
 # Load best params and define models
 with open("results/logreg_best_params.json") as f:
@@ -249,11 +313,12 @@ models = {
     )
 }
 
-# Parent run for the entire pipeline; child runs for each model
+# Parent run for the entire pipeline
 results = []
+model_versions = {}
 
 with mlflow.start_run(run_name="TrainingPipeline"):
-    # Log the hyperparameter search results inside the parent run for provenance
+    # Log the hyperparameter search results
     try:
         mlflow.log_artifact("results/logreg_best_params.json", artifact_path="hyperparams")
         mlflow.log_artifact("results/rf_best_params.json", artifact_path="hyperparams")
@@ -261,16 +326,73 @@ with mlflow.start_run(run_name="TrainingPipeline"):
     except Exception as e:
         print(f"Could not log hyperparam JSONs to parent run: {e}")
 
+    # Train all models
     for name, model in models.items():
-        print("Training:", name)
-        m = train_save_eval(model, name, X_train_scaled, y_train, X_test_scaled, y_test)
+        print(f"\nTraining: {name}")
+        m, model_info = train_save_eval(model, name, X_train_scaled, y_train, X_test_scaled, y_test)
         m["Model"] = name
         results.append(m)
+        if model_info:
+            model_versions[name] = {
+                "name": f"fraud_detection_{name.lower()}",
+                "version": model_info.registered_model_version
+            }
 
-# Save comparison CSV locally and also log as artifact in the parent run
-df = pd.DataFrame(results)
-df.to_csv("results/model_comparison.csv", index=False)
-print("Training & evaluation done. Models saved to models/ and metrics to results/")
+    # Save comparison CSV
+    df = pd.DataFrame(results)
+    df.to_csv("results/model_comparison.csv", index=False)
+    mlflow.log_artifact("results/model_comparison.csv", artifact_path="comparison")
 
+    # Select champion model based on PR-AUC
+    best_model = max(results, key=lambda x: x['PR-AUC'])
+    
+    print("\n" + "="*70)
+    print("MODEL COMPARISON (sorted by PR-AUC)")
+    print("="*70)
+    for r in sorted(results, key=lambda x: x['PR-AUC'], reverse=True):
+        print(f"{r['Model']:20} | PR-AUC: {r['PR-AUC']:.4f} | ROC-AUC: {r['ROC-AUC']:.4f} | "
+              f"F1: {r['F1-score']:.4f} | Precision: {r['Precision']:.4f} | Recall: {r['Recall']:.4f}")
+    
+    print("\n" + "="*70)
+    print(f"CHAMPION MODEL: {best_model['Model']}")
+    print(f"PR-AUC: {best_model['PR-AUC']:.4f} (best for imbalanced fraud detection)")
+    print("="*70)
 
-# 🔹 MLflow model registry support
+    # Promote champion using modern alias-based approach (no more stages!)
+    try:
+        client = MlflowClient()
+        champion_name = best_model['Model']
+        model_name = f"fraud_detection_{champion_name.lower()}"
+        version = model_versions[champion_name]["version"]
+        
+        # Set alias "champion" to the best model version
+        client.set_registered_model_alias(
+            name=model_name,
+            alias="champion",
+            version=version
+        )
+        
+        # Add tag
+        client.set_model_version_tag(
+            name=model_name,
+            version=version,
+            key="selection_metric",
+            value="PR-AUC"
+        )
+        
+        print(f"\nSet 'champion' and 'production' aliases for {model_name} version {version}")
+        
+    except Exception as e:
+        print(f"\nCould not set model aliases: {e}")
+
+    # Log champion model info to parent run
+    mlflow.log_param("champion_model", best_model['Model'])
+    mlflow.log_metric("champion_pr_auc", best_model['PR-AUC'])
+    mlflow.log_metric("champion_roc_auc", best_model['ROC-AUC'])
+    mlflow.log_metric("champion_f1", best_model['F1-score'])
+
+print("\nTraining and evaluation complete")
+print("All models registered in MLflow Model Registry")
+print(f"Champion model ({best_model['Model']}) marked with 'champion' and 'production' aliases")
+print("\nTo load the champion model in production:")
+print(f"  model = mlflow.pyfunc.load_model('models:/{model_versions[best_model['Model']]['name']}@champion')")
