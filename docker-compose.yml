@@ -8,6 +8,18 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: fraud-api
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_REGISTRY_URI: http://mlflow:5000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      MLFLOW_S3_ENDPOINT_URL: http://${MINIO_HOST}:${MINIO_PORT}
+      AWS_S3_FORCE_PATH_STYLE: "true"
+      MLFLOW_S3_IGNORE_TLS: "true"
     ports:
       - "8080:8080"
     restart: unless-stopped
@@ -74,6 +86,7 @@ services:
   mlflow:
     image: ghcr.io/mlflow/mlflow:${MLFLOW_VERSION}
     container_name: mlflow-server
+    hostname: mlflow
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,28 +103,26 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
       AWS_S3_FORCE_PATH_STYLE: "true"
       MLFLOW_S3_IGNORE_TLS: "true"
-      MLFLOW_HOST: ${MLFLOW_HOST}
-      MLFLOW_PORT: ${MLFLOW_PORT}
     command: >
-      /bin/bash -c "
+      /bin/sh -c "
       pip install --no-cache-dir psycopg2-binary boto3 &&
-      mlflow server
-        --backend-store-uri ${MLFLOW_BACKEND_STORE_URI}
-        --default-artifact-root ${MLFLOW_DEFAULT_ARTIFACT_ROOT}
-        --host ${MLFLOW_HOST}
-        --port ${MLFLOW_PORT}
-        --serve-artifacts
+      mlflow server \
+        --backend-store-uri ${MLFLOW_BACKEND_STORE_URI} \
+        --default-artifact-root ${MLFLOW_DEFAULT_ARTIFACT_ROOT} \
+        --host 0.0.0.0 \
+        --port 5000 \
+        --workers 4 \
+        --allowed-hosts mlflow:5000,localhost,127.0.0.1,localhost:5001
       "
     ports:
-      - "5001:${MLFLOW_PORT}"
+      - "5001:5000"
+    networks:
+      - mlflow-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${MLFLOW_PORT}/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
       interval: 10s
       timeout: 5s
       retries: 30
-    networks:
-      - mlflow-network
 
 networks:
   mlflow-network:
-    name: mlflow-network
