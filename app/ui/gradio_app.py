@@ -1,20 +1,14 @@
 import time
 import random
-import requests
 import gradio as gr
-
 from typing import List
-
-API_URL = "http://127.0.0.1:8080/predict"
+from app.services.ml_service import model_service
 
 NUMERICAL_COLUMNS = [
     "Time", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10",
     "V11", "V12", "V13", "V14", "V15", "V16", "V17", "V18", "V19", "V20",
     "V21", "V22", "V23", "V24", "V25", "V26", "V27", "V28", "Amount"
 ]
-
-HTTP_SESSION = requests.Session()
-HTTP_TIMEOUT = 8
 
 def get_default_value(col):
     if col == "Time":
@@ -53,22 +47,14 @@ def predict_generator(*args):
         yield "**Input error**: wrong number of fields."
         return
 
-    yield "⏳ Calling prediction API…"
+    yield "⏳ Running model inference…"
 
     features = build_feature_dict(args)
-    payload = {"features": features}
 
-    start = time.time()
     try:
-        resp = HTTP_SESSION.post(API_URL, json=payload, timeout=HTTP_TIMEOUT)
+        start = time.time()
+        data = model_service.predict(features)
         latency = time.time() - start
-        resp.raise_for_status()
-
-        try:
-            data = resp.json()
-        except Exception:
-            yield f"❌ Invalid JSON from API: {resp.text}"
-            return
 
         prob = safe_format_probability(data.get("fraud_probability"))
         version = data.get("model_version", "unknown")
@@ -91,12 +77,13 @@ def predict_generator(*args):
 **Fraud Probability**: **{prob}** {risk_label}
 
 **Model Version**: `{version}`  
-**API Latency**: `{latency:.3f} sec`
+**Inference Time**: `{latency:.3f} sec`
 """
         yield md
 
     except Exception as e:
-        yield f"❌ Error calling API: {e}"
+        yield f"❌ Prediction error: {e}"
+
 
 custom_theme = gr.themes.Soft().set(
     button_primary_background_fill_hover='*primary_600',

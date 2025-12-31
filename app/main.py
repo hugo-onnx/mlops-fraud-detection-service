@@ -20,4 +20,4 @@ app = FastAPI(title="Fraud Detection API", lifespan=lifespan)
 
 app.include_router(router)
 
-app = mount_gradio_app(app, gr_app, path="/gradio")
+app = mount_gradio_app(app, gr_app, path="/ui")
