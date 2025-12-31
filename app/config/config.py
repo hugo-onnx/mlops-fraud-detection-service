@@ -19,8 +19,8 @@ class Config:
     REPORT_PATH = "reports/data_drift_report.html"
     REPORT_JSON = "reports/data_drift_report.json"
     REFERENCE_CSV = "data/production/creditcard_reference.csv"
-    SCALER_PATH = "data/processed/scaler.pkl"
-    FEATURES_PATH = "data/processed/feature_columns.json"
+    SCALER_PATH = "models/scaler.pkl"
+    FEATURES_PATH = "models/feature_columns.json"
     
     # Model Registry Names
     MODEL_NAMES = {
