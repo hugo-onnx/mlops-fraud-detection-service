@@ -1,4 +1,3 @@
-import os
 import json
 import joblib
 import mlflow
@@ -9,6 +8,7 @@ import onnxruntime as rt
 from mlflow.tracking import MlflowClient
 from app.config.config import settings, logger
 from app.db.db import init_db
+
 
 class ModelService:
     def __init__(self):
@@ -22,7 +22,7 @@ class ModelService:
             logger.warning("MLflow disabled. Using local model fallback.")
             self.client = None
 
-        # Model State
+        # Model state
         self.session = None
         self.scaler = None
         self.feature_columns = []
@@ -34,179 +34,158 @@ class ModelService:
             "name": None,
             "version": None,
             "description": None,
-            "type": None
+            "type": None,
         }
 
-
+    # Public API
     def load_model(self):
         """
-        Main entry point to load the model.
-        Tries MLflow registry first (if enabled), falls back to local files otherwise.
+        Loads model + preprocessors.
+        Tries MLflow (if enabled), otherwise uses local ONNX artifacts.
         """
         if self.mlflow_enabled:
             try:
                 logger.info("Attempting to load champion model from MLflow registry...")
                 self._load_from_registry()
                 logger.info(
-                    f"Successfully loaded {self.model_meta['name']} "
+                    f"Loaded {self.model_meta['name']} "
                     f"(v{self.model_meta['version']})"
                 )
             except Exception as e:
-                logger.error(f"Failed to load from registry: {e}")
-                logger.warning("Falling back to local model files...")
+                logger.exception("MLflow load failed. Falling back to local model.")
                 self._load_fallback()
         else:
             self._load_fallback()
 
+        # Initialize DB schema using feature list
         init_db(self.feature_columns)
 
     def predict(self, features: dict) -> float:
-        """
-        Runs inference on a single dictionary of features.
-        """
         if not self.session:
-            raise RuntimeError("Model is not loaded. Call load_model() first.")
+            raise RuntimeError("Model is not loaded.")
 
-        # 1. Validation
+        # Validate inputs
         missing = [c for c in self.feature_columns if c not in features]
         if missing:
             raise ValueError(f"Missing required features: {missing}")
 
-        # 2. Preprocessing
-        # Create DataFrame in the exact order required by the model
         X_df = pd.DataFrame([features], columns=self.feature_columns)
-        
-        # Scale features
-        # Note: input needs to be float32 for ONNX Runtime in most cases
         X_scaled = self.scaler.transform(X_df).astype(np.float32)
 
-        # 3. Inference
-        preds = self.session.run([self.output_name], {self.input_name: X_scaled})
+        preds = self.session.run(
+            [self.output_name], {self.input_name: X_scaled}
+        )
 
-        # 4. Output Extraction
-        # ONNX output is typically a list of dicts or arrays. 
-        # For sklearn-onnx classifiers, it's often [label, probabilities_dict]
-        # We assume index 1 is the probability map, and we want the probability of "1" (Fraud)
-        pred_val = preds[0][0] # Adjust based on specific ONNX export shape if needed
-        
-        # Handle different return shapes from ONNX (Map vs Array)
-        if isinstance(pred_val, (dict, map)):
-            # If it returns a dictionary {0: 0.99, 1: 0.01}
-            fraud_prob = pred_val.get(1, 0.0)
-        elif isinstance(pred_val, (list, np.ndarray)):
-            # If it returns an array [0.99, 0.01]
-            fraud_prob = pred_val[1]
-        else:
-            # Fallback if structure is unexpected (e.g. bare float)
-            fraud_prob = float(pred_val)
+        pred_val = preds[0][0]
 
-        return float(fraud_prob)
+        if isinstance(pred_val, dict):
+            return float(pred_val.get(1, 0.0))
+        if isinstance(pred_val, (list, np.ndarray)):
+            return float(pred_val[1])
 
+        return float(pred_val)
+
+    # MLflow loading
     def _find_champion_model(self):
-        """Iterates through known model names to find one tagged 'champion'."""
         for model_key, model_name in settings.MODEL_NAMES.items():
             try:
-                # We use alias 'champion' to find the specific version
-                version = self.client.get_model_version_by_alias(model_name, "champion")
+                version = self.client.get_model_version_by_alias(
+                    model_name, "champion"
+                )
                 return model_name, version, model_key
             except Exception:
                 continue
-        
-        raise ValueError("No model with 'champion' alias found in registry.")
+
+        raise RuntimeError("No champion model found in MLflow registry.")
 
     def _load_from_registry(self):
-        """Loads artifacts from MLflow."""
         model_name, model_version, model_key = self._find_champion_model()
-        
-        # Construct URI
-        # Using "models:/" URI is standard for loading, but for artifact downloading
-        # we often need the source run_id if we want specific sub-files (like scaler).
+
         run_id = model_version.run_id
         artifact_uri = f"runs:/{run_id}"
 
-        # Determine Model Type Folder Name (e.g. 'RandomForest', 'LightGBM')
-        # This matches the logic you had for directory structure
         if "lightgbm" in model_key:
-            model_type_dir = "LightGBM"
+            model_type = "LightGBM"
         elif "logisticregression" in model_key:
-            model_type_dir = "LogisticRegression"
+            model_type = "LogisticRegression"
         elif "randomforest" in model_key:
-            model_type_dir = "RandomForest"
+            model_type = "RandomForest"
         else:
-            model_type_dir = model_key.title()
+            model_type = model_key.title()
 
-        # 1. Download & Load ONNX Model
-        onnx_path = f"{model_type_dir}/onnx/{model_type_dir}_best.onnx"
-        local_model_path = mlflow.artifacts.download_artifacts(f"{artifact_uri}/{onnx_path}")
-        self.session = rt.InferenceSession(local_model_path, providers=["CPUExecutionProvider"])
-        
-        # 2. Download & Load Preprocessors (Scaler/Features)
-        # Assuming these are logged in the same run, usually at root or specific folder
-        # Adjust paths based on your specific artifact structure
+        onnx_rel_path = f"{model_type}/onnx/{model_type}_best.onnx"
+        local_onnx = mlflow.artifacts.download_artifacts(
+            f"{artifact_uri}/{onnx_rel_path}"
+        )
+
+        self.session = rt.InferenceSession(
+            local_onnx, providers=["CPUExecutionProvider"]
+        )
+
         try:
-            local_scaler_path = mlflow.artifacts.download_artifacts(f"{artifact_uri}/scaler.pkl")
-            self.scaler = joblib.load(local_scaler_path)
-            
-            local_features_path = mlflow.artifacts.download_artifacts(f"{artifact_uri}/feature_columns.json")
-            with open(local_features_path, "r") as f:
+            scaler_path = mlflow.artifacts.download_artifacts(
+                f"{artifact_uri}/scaler.pkl"
+            )
+            features_path = mlflow.artifacts.download_artifacts(
+                f"{artifact_uri}/feature_columns.json"
+            )
+            self.scaler = joblib.load(scaler_path)
+            with open(features_path) as f:
                 self.feature_columns = json.load(f)
         except Exception:
-            # If not in registry, try local fallback for preprocessors
-            logger.warning("Preprocessors not found in MLflow run. Using local files.")
-            self.scaler = joblib.load(settings.SCALER_PATH)
-            with open(settings.FEATURES_PATH, "r") as f:
-                self.feature_columns = json.load(f)
+            logger.warning("Preprocessors missing in MLflow. Using local files.")
+            self._load_local_preprocessors()
 
-        # 3. Configure Session I/O
         self._configure_session()
 
-        # 4. Update Metadata
         self.model_meta = {
             "name": model_name,
             "version": model_version.version,
             "description": model_version.description,
-            "type": model_key
+            "type": model_key,
         }
 
+    # Local fallback (Render-safe)
     def _load_fallback(self):
-        """Loads from local disk if MLflow fails or deactivated."""
-        local_onnx_path = "models/LightGBM_best.onnx"
+        onnx_path = settings.MODELS_DIR / "LightGBM_best.onnx"
 
-        if not os.path.exists(local_onnx_path):
+        if not onnx_path.exists():
             raise FileNotFoundError(
-                f"Fallback ONNX model not found at {local_onnx_path}"
+                f"Local ONNX model not found at {onnx_path}"
             )
-        
-        self.scaler = joblib.load(settings.SCALER_PATH)
 
-        with open(settings.FEATURES_PATH, "r") as f:
-            self.feature_columns = json.load(f)
+        logger.info(f"Loading local ONNX model from {onnx_path}")
 
         self.session = rt.InferenceSession(
-            local_onnx_path,
-            providers=["CPUExecutionProvider"]
+            str(onnx_path), providers=["CPUExecutionProvider"]
         )
 
+        self._load_local_preprocessors()
         self._configure_session()
 
         self.model_meta = {
-            "name": "Local Fallback",
-            "version": "0.0.0",
-            "description": "Loaded from local disk (Render deployment)",
-            "type": "fallback"
+            "name": "Local LightGBM",
+            "version": "local",
+            "description": "Bundled ONNX model (Render)",
+            "type": "fallback",
         }
 
+    def _load_local_preprocessors(self):
+        self.scaler = joblib.load(settings.SCALER_PATH)
+        with open(settings.FEATURES_PATH) as f:
+            self.feature_columns = json.load(f)
+
+    # ONNX helpers
     def _configure_session(self):
-        """Helper to determine input/output names from the ONNX session."""
         self.input_name = self.session.get_inputs()[0].name
-        
-        # Logic to find probability output
+
         prob_output = None
         for out in self.session.get_outputs():
             if "prob" in out.name.lower():
                 prob_output = out.name
                 break
-        self.output_name = prob_output if prob_output else self.session.get_outputs()[0].name
+
+        self.output_name = prob_output or self.session.get_outputs()[0].name
 
 
 model_service = ModelService()
