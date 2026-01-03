@@ -113,22 +113,20 @@ class ModelService:
         # 4. Scalar
         return float(output)
 
+    def _normalize_list_output(self, output):
+        # unwrap list recursively
+        while isinstance(output, list) and len(output) == 1:
+            output = output[0]
 
-def _normalize_list_output(self, output):
-    # unwrap list recursively
-    while isinstance(output, list) and len(output) == 1:
-        output = output[0]
+        if isinstance(output, dict):
+            if 1 in output:
+                return float(output[1])
+            return float(max(output.values()))
 
-    if isinstance(output, dict):
-        if 1 in output:
-            return float(output[1])
-        return float(max(output.values()))
+        if isinstance(output, np.ndarray):
+            return float(output.flatten()[-1])
 
-    if isinstance(output, np.ndarray):
-        return float(output.flatten()[-1])
-
-    return float(output)
-
+        return float(output)
 
     # MLflow loading
     def _find_champion_model(self):
