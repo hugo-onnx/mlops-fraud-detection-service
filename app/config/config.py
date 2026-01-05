@@ -10,10 +10,6 @@ logging.basicConfig(
 logger = logging.getLogger("fraud-api")
 
 
-# Path Resolution (repo-root safe)
-BASE_DIR = Path(__file__).resolve().parents[2]
-
-
 class Config:
     # MLflow (optional)
     MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
@@ -22,11 +18,12 @@ class Config:
     MLFLOW_ENABLED = bool(MLFLOW_TRACKING_URI)
 
     # Paths (absolute, container-safe)
-    DATA_DIR = BASE_DIR / "data"
+    BASE_DIR = Path(__file__).resolve().parents[2]
     MODELS_DIR = BASE_DIR / "models"
     REPORTS_DIR = BASE_DIR / "reports"
 
-    DB_PATH = DATA_DIR / "production" / "requests.db"
+    DB_PATH = Path(os.getenv("DB_PATH", "/app/data/requests.db"))
+    DATA_DIR = BASE_DIR / "data"
     REFERENCE_CSV = DATA_DIR / "production" / "creditcard_reference.csv"
 
     SCALER_PATH = MODELS_DIR / "scaler.pkl"
