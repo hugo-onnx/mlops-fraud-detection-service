@@ -25,14 +25,29 @@ def init_db(feature_cols: list):
     logger.info(f"DB path: {settings.DB_PATH}")
     logger.info(f"Create table SQL:\n{sql}")
 
-    with sqlite3.connect(settings.DB_PATH) as conn:
+    try:
+        conn = sqlite3.connect(
+            settings.DB_PATH,
+            timeout=30,
+            check_same_thread=False
+        )
         cursor = conn.cursor()
         cursor.execute(sql)
         conn.commit()
+    except Exception:
+        logger.exception("Failed to init DB")
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def log_request(features: dict, proba: float):
-    with sqlite3.connect(settings.DB_PATH) as conn:
+    try:
+        conn = sqlite3.connect(
+            settings.DB_PATH,
+            timeout=30,
+            check_same_thread=False
+        )
         cursor = conn.cursor()
 
         columns = (
@@ -51,3 +66,8 @@ def log_request(features: dict, proba: float):
             values,
         )
         conn.commit()
+    except Exception:
+        logger.exception("Failed to log prediction to DB")
+    finally:
+        if conn is not None:
+            conn.close()
