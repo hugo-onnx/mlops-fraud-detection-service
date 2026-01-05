@@ -16,6 +16,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Stage 2: Runtime
 FROM python:3.11-slim
+
 WORKDIR /app
 
 ENV PATH="/app/.venv/bin:$PATH" \
