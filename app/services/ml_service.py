@@ -54,7 +54,6 @@ class ModelService:
             logger.exception("Model load failed. Falling back to local artifacts.")
             self._load_fallback()
 
-        # DB init only after features are loaded
         if not self.feature_columns:
             raise RuntimeError("Feature columns list is empty — cannot initialize DB")
 
@@ -81,40 +80,30 @@ class ModelService:
 
         output = outputs[0]
 
-        # ---------- NORMALIZATION PIPELINE ----------
-
-        # 1. Dict → take fraud class (1)
         if isinstance(output, dict):
             if 1 in output:
                 return float(output[1])
             if "probabilities" in output:
                 return float(output["probabilities"][-1])
-            # fallback: max prob
             return float(max(output.values()))
 
-        # 2. NumPy array
         if isinstance(output, np.ndarray):
             arr = output.squeeze()
 
-            # Binary classifier → [p0, p1]
             if arr.ndim == 1 and arr.size >= 2:
                 return float(arr[-1])
 
-            # Scalar
             if arr.ndim == 0:
                 return float(arr)
 
             return float(arr.flatten()[-1])
 
-        # 3. List (wrap numpy or dict)
         if isinstance(output, list):
             return self._normalize_list_output(output)
 
-        # 4. Scalar
         return float(output)
 
     def _normalize_list_output(self, output):
-        # unwrap list recursively
         while isinstance(output, list) and len(output) == 1:
             output = output[0]
 
@@ -190,7 +179,7 @@ class ModelService:
             "type": model_key,
         }
 
-    # Local fallback (Render-safe)
+    # Local fallback
     def _load_fallback(self):
         logger.warning("Using local model fallback")
 
@@ -200,10 +189,8 @@ class ModelService:
         if not onnx_path.exists():
             raise FileNotFoundError(f"Local ONNX model not found at {onnx_path}")
 
-        # Load preprocessors frist
         self._load_local_preprocessors()
 
-        # Load ONNX
         self.session = rt.InferenceSession(
             str(onnx_path),
             providers=["CPUExecutionProvider"]
