@@ -1,13 +1,13 @@
-import os
 import time
 import json
 import pandas as pd
 from io import BytesIO
+from pathlib import Path
 
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, UploadFile, File
 
-from app.db.db import log_request
+from app.db.db import log_request, log_request_bulk
 from app.config.config import settings, logger
 from app.services.ml_service import model_service
 from app.services.drift_service import drift_service
@@ -16,30 +16,38 @@ from app.models.schemas import Transaction, DriftReportRequest, PredictionRespon
 
 router = APIRouter()
 
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024
+
 
 # Prediction Endpoint
-@router.post("/predict", response_model=PredictionResponse, status_code=200, tags=["Prediction"])
-def predict(transaction: Transaction, background_tasks: BackgroundTasks, request: Request):
+@router.post(
+    "/predict", 
+    response_model=PredictionResponse, 
+    status_code=200, 
+    tags=["Prediction"]
+)
+def predict(
+    transaction: Transaction, 
+    background_tasks: BackgroundTasks, 
+    request: Request
+) -> PredictionResponse:
     """
     Receives a transaction and returns the predicted fraud probability.
     Logs the request asynchronously to the production database.
     """
     start_time = time.time()
+    client_host = getattr(getattr(request, 'client', None), 'host', 'unknown')
     try:
-        logger.info(f"Prediction request received from {request.client.host}")
-
+        logger.info(f"Prediction request received from {client_host}")
         probability = model_service.predict(transaction.features)
-        
         background_tasks.add_task(log_request, transaction.features, probability)
         
         latency = time.time() - start_time
-        logger.info(
-            json.dumps({
-                "event": "prediction",
-                "fraud_probability": probability,
-                "latency_sec": round(latency, 4)
-            })
-        )
+        logger.info(json.dumps({
+            "event": "prediction",
+            "fraud_probability": probability,
+            "latency_sec": round(latency, 4)
+        }))
         
         return {
             "fraud_probability": probability, 
@@ -52,32 +60,33 @@ def predict(transaction: Transaction, background_tasks: BackgroundTasks, request
         raise HTTPException(status_code=500, detail="Internal processing error during inference.")
     
 
-@router.post("/predict/batch", tags=["Prediction"], status_code=200)
+@router.post(
+    "/predict/batch", 
+    tags=["Prediction"], 
+    status_code=200
+)
 async def batch_predict_csv(
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = None,
     request: Request = None
 ):
     """
-    Receives a CSV file with transaction features and returns a CSV
-    file with an additional `fraud_probability` column.
+    Receives a CSV file with transaction features and returns a CSV file with an additional `fraud_probability` column.
     """
-
     start_time = time.time()
+    client_host = getattr(getattr(request, 'client', None), 'host', 'unknown')
 
     if not file.filename.endswith(".csv"):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid file type. Only .csv files are supported."
-        )
+        raise HTTPException(status_code=400, detail="Invalid file type. Only .csv files are supported.")
+    
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Max size is 10MB.")
 
     try:
-        logger.info(f"Batch prediction request from {request.client.host}")
+        logger.info(f"Batch prediction request from {client_host}")
 
-        # Read CSV
-        contents = await file.read()
         df = pd.read_csv(BytesIO(contents))
-
         required_features = model_service.feature_columns
         missing = [c for c in required_features if c not in df.columns]
 
@@ -87,30 +96,29 @@ async def batch_predict_csv(
                 detail=f"Missing required columns: {missing}"
             )
 
-        # Enforce column order
         feature_df = df[required_features]
 
         predictions = []
-
         for _, row in feature_df.iterrows():
             features = row.to_dict()
             prob = model_service.predict(features)
             predictions.append(prob)
+        predictions = pd.Series(predictions)
 
-            # Log each row
-            if background_tasks:
-                background_tasks.add_task(log_request, features, prob)
-
-        # Append predictions to original dataframe
         df["fraud_probability"] = predictions
 
-        # Write output CSV
+        if background_tasks:
+            background_tasks.add_task(
+                log_request_bulk,
+                feature_df.to_dict(orient="records"),
+                predictions.tolist()
+            )
+
         output_buffer = BytesIO()
         df.to_csv(output_buffer, index=False)
         output_buffer.seek(0)
 
         latency = time.time() - start_time
-
         logger.info(json.dumps({
             "event": "batch_prediction",
             "rows": len(df),
@@ -136,15 +144,16 @@ async def batch_predict_csv(
         )
     
 
-@router.get("/predict/batch/template", tags=["Prediction"], status_code=200)
+@router.get(
+    "/predict/batch/template", 
+    tags=["Prediction"], 
+    status_code=200)
 def download_batch_template():
     """
-    Returns a CSV template with required feature columns
-    and 10 example rows (no label column).
+    Returns a CSV template with required feature columns and 10 example rows.
     """
     try:
         columns = model_service.feature_columns
-
         sample_rows = [
             [0,-1.3598071336738,-0.0727811733098497,2.53634673796914,1.37815522427443,-0.338320769942518,0.462387777762292,0.239598554061257,0.0986979012610507,0.363786969611213,0.0907941719789316,-0.551599533260813,-0.617800855762348,-0.991389847235408,-0.311169353699879,1.46817697209427,-0.470400525259478,0.207971241929242,0.0257905801985591,0.403992960255733,0.251412098239705,-0.018306777944153,0.277837575558899,-0.110473910188767,0.0669280749146731,0.128539358273528,-0.189114843888824,0.133558376740387,-0.0210530534538215,149.62],
             [0,1.19185711131486,0.26615071205963,0.16648011335321,0.448154078460911,0.0600176492822243,-0.0823608088155687,-0.0788029833323113,0.0851016549148104,-0.255425128109186,-0.166974414004614,1.61272666105479,1.06523531137287,0.48909501589608,-0.143772296441519,0.635558093258208,0.463917041022171,-0.114804663102346,-0.183361270123994,-0.145783041325259,-0.0690831352230203,-0.225775248033138,-0.638671952771851,0.101288021253234,-0.339846475529127,0.167170404418143,0.125894532368176,-0.00898309914322813,0.0147241691924927,2.69],
@@ -157,7 +166,6 @@ def download_batch_template():
             [7,-0.89428608220282,0.286157196276544,-0.113192212729871,-0.271526130088604,2.6695986595986,3.72181806112751,0.370145127676916,0.851084443200905,-0.392047586798604,-0.410430432848439,-0.705116586646536,-0.110452261733098,-0.286253632470583,0.0743553603016731,-0.328783050303565,-0.210077268148783,-0.499767968800267,0.118764861004217,0.57032816746536,0.0527356691149697,-0.0734251001059225,-0.268091632235551,-0.204232669947878,1.0115918018785,0.373204680146282,-0.384157307702294,0.0117473564581996,0.14240432992147,93.2],
             [9,-0.33826175242575,1.11959337641566,1.04436655157316,-0.222187276738296,0.49936080649727,-0.24676110061991,0.651583206489972,0.0695385865186387,-0.736727316364109,-0.366845639206541,1.01761446783262,0.836389570307029,1.00684351373408,-0.443522816876142,0.150219101422635,0.739452777052119,-0.540979921943059,0.47667726004282,0.451772964394125,0.203711454727929,-0.246913936910008,-0.633752642406113,-0.12079408408185,-0.385049925313426,-0.0697330460416923,0.0941988339514961,0.246219304619926,0.0830756493473326,3.68],
         ]
-
         df = pd.DataFrame(sample_rows, columns=columns)
 
         buffer = BytesIO()
@@ -185,7 +193,6 @@ def download_batch_template():
 def generate_drift_report(params: DriftReportRequest):
     """
     Triggers the generation of a data drift report using Evidently.
-    Compares the last N days of production data against reference data.
     """
     try:
         results = drift_service.generate_report(params.days)
@@ -200,14 +207,19 @@ def generate_drift_report(params: DriftReportRequest):
 @router.get("/monitoring/drift/report", tags=["Monitoring"])
 def get_drift_report():
     """Returns the last generated HTML data drift report."""
-    if not os.path.exists(settings.REPORT_PATH):
+    report_path: Path = settings.REPORT_PATH
+
+    logger.info(f"Checking for report at: {report_path.absolute()}")
+
+    if not report_path.exists():
+        logger.warning(f"Report file not found at {report_path.absolute()}")
         raise HTTPException(
             status_code=404,
             detail="No drift report found. Generate one first using POST /monitoring/drift"
         )
     
     return FileResponse(
-        settings.REPORT_PATH,
+        path=str(report_path),
         media_type="text/html",
         filename="data_drift_report.html",
     )
