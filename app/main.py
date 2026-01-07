@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from gradio.routes import mount_gradio_app
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
 from app.api.routes import router
 from app.services.ml_service import model_service
@@ -8,13 +9,14 @@ from app.ui.gradio_app import gr_app
 from app.config.config import logger
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         model_service.load_model()
     except Exception as e:
         logger.error(f"Model load failed: {e}")
+        raise RuntimeError("Startup failed because model could not be loaded") from e
     yield
-
+    logger.info("Shutting down FastAPI app...")
 
 app = FastAPI(title="Fraud Detection API", lifespan=lifespan)
 
