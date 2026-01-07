@@ -12,6 +12,7 @@ services:
       mlflow:
         condition: service_healthy
     environment:
+      BASE_DIR: /app
       DB_PATH: /app/data/requests.db
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_REGISTRY_URI: http://mlflow:5000
@@ -27,6 +28,7 @@ services:
     volumes:
       - ./models:/app/models
       - ./data:/app/data
+      - ./reports:/app/reports
     networks:
       - mlflow-network
 

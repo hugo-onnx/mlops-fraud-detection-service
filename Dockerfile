@@ -26,9 +26,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
+RUN mkdir -p /app/reports /app/data \
+    && chown -R appuser:appuser /app
+
 COPY --from=builder /app/.venv /app/.venv
 
-COPY --from=builder --chown=appuser:appuser /app /app
 COPY --chown=appuser:appuser . .
 
 USER appuser
